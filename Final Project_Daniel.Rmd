@@ -1,0 +1,519 @@
+---
+title: "Predicting Death due to Heart Failure"
+author: "Daniel Anugraha"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: united
+    code_folding: hide
+date: "June 15 2024"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r include = FALSE}
+  library(ggplot2)
+  library(tidyverse)
+  library(tidymodels)
+  library(kableExtra)
+  library(corrplot)
+  library(naniar)
+  library(janitor)
+  library(forcats)
+  library(glue)
+  library(ggpubr)
+  library(MASS)
+  library(discrim)
+  library(vip)
+  setwd(getwd())
+  heartdata <-read.csv("heart_failure_clinical_records_dataset.csv")
+```
+
+# Introduction
+
+The goal of the project is to assess machine learning technique to find a model that best predicts the death due to the heart failure with each of the important health risk factors, such as frequency of visits to the doctor, smoking, medical history present, and many more. It is shown from the data provided through [kaggle](https://www.kaggle.com/datasets/andrewmvd/heart-failure-clinical-data). Predicting the death event through the patients condition or behaviour is important to assess our lifestyle, while also provide information to insurance companies to create better pricing for people.
+
+The data shows a detailed of the person's medical data, which has the predictor variables: 
+
+- `age` : The age of the person when the data is taken or death
+- `anaemia` : Condition which damages the function of the red blood cells
+- `creatinine_phosphokinase` : Level of CPK enzyme in the blood (mcg/L)
+- `diabetes`: Whether the person has diabetes or not
+- `ejection_fraction` : Percentage of blood leaving the heart at each contraction
+- `high_blood_pressure` : If the person has high blood pressure
+- `platelets` : Amount of platelets in the blood
+- `serum_creatinine` : level of serum creatinine in the blood (mg/dL)
+- `serum_sodium` : Level of serum sodium in the blood (mEq/L)
+- `sex` : Female/Male
+- `smoking` : If the patient smokes or not
+- `time` : Follow-up period (days)
+
+Knowing that these variables are essential to the status of the patients as these predictors rely heavily on heart failure, we will explore some of the variables to see the reaction of each of our variable to our outcome, `death_event`. 
+
+# An Overview of Dataset
+
+Since we only have `r nrow(heartdata)`, we first check if there is missing data as it is critical if there is . Although since the predictors are mostly medical terms that are collected, it is unlikely that there is missing data as it is not critical for the subject to undisclose the information.
+
+```{r}
+  vis_miss(heartdata)
+```
+
+Fortunately, there is no missing data, so we now start on exploring the predictors. First we see the first five samples to get a glimpse of what we are workkng on.
+
+```{r}
+  head(heartdata) %>%
+    kable() %>%
+    kable_material(c("striped", "hover"), full_width = F) %>%
+    scroll_box(width = "800px") 
+```
+The name of the column for the death event is capitalized, which might be annoying when we are trying to access the variable, we might want to tidy up the column name. This can be done using the `janitor` package, which has a function of `clean_names()` to simplify the variable names
+
+```{r}
+  heartdata <- clean_names(heartdata)
+  head(heartdata) %>%
+    kable() %>%
+    kable_material(c("striped", "hover"), full_width = F) %>%
+    scroll_box(width = "800px") 
+```
+
+
+Looking at the variable class, the response variable are in a binary form (0,1). Since the models and the packages we use is more comfortable with factors, we will change the variable class into factors for the categorical variables. 
+
+```{r}
+  heartdata <- heartdata %>% 
+      mutate(anaemia = factor(anaemia, levels = c(1, 0), labels = c("Yes", "No")),
+             diabetes = factor(diabetes, levels = c(1, 0), labels = c("Yes", "No")),
+             high_blood_pressure = factor(high_blood_pressure, levels = c(1, 0), labels =
+                                            c("Yes", "No")),
+             sex = factor(sex, levels = c(1, 0), labels = c("F", "M")),
+             smoking = factor(smoking, levels = c(1, 0), labels = c("Yes", "No")),
+             death_event = factor(death_event, levels = c(1, 0), labels = c("Dead", "Alive")))
+```
+
+## EDA
+
+To realize our optimal model, we will explore our predictors and our outcome variables to see if there are additional changes needed to simplify our datasets. In order to do that, we will try to create a bar distribution for our response variable with respect to the outcome variable to see their relation between them. For our numeric variables, we will look at the correlation plot.
+
+### Outcome Balance
+
+We will need to see the balance of our outcome variables and see if there is more to be done so we can increase our accuracy for our model.
+
+```{r}
+  heartdata %>%
+    ggplot(aes(x = death_event)) +
+    geom_bar() +
+    labs(x = "Death Status", title = "Number of death due to heart disease")
+```
+
+Unfortunately, half of the people in the sample are dead. Although, we can look at the bright side since we can have an unbiased model as we do not need to alter our outcome variables as the distribution of the number of death and alive are comfortably balanced. 
+
+### Variable Correlation
+
+Since almost half of our variables are numeric, we will look into the correlation plot to better see their relationship with each other.
+
+```{r}
+  heartdata %>%
+    dplyr::select(where(is.numeric)) %>%
+    cor() %>%
+    corrplot(type = "lower", diag = FALSE, method = "number")
+```
+
+Most of the predictor variable has no heavy correlation as seen on the graph. The biggest one, which has a negative correlation value of 0.22 is the time vs age. This would make sense as age increases, the more doctor appointments are needed, which reduces the time delay till next visits. Moreover, since all the numerical variables have no correlation with each other, no additional action or grouping is needed.
+
+### Gender distribution
+
+It might be interesting to see the distribution of deaths in terms of gender, to see if somehow gender affects the death of a heart attack or not. However, as shown in the figure below, male has the roughly the same proportion of death as female in this sample, so gender might not heavily impact the death due to heart failure.
+
+```{r}
+  drawgraph <- function(responsevar, responsevartext) {
+    heartdata %>%
+      ggplot(aes(x = responsevar,  fill = death_event)) +
+      geom_bar(position = "fill") +
+      scale_y_continuous(labels = scales::percent) +
+      labs(title = glue("Proportion of Death with respect to ", responsevartext), x = glue(responsevartext)) +
+      theme(plot.title = element_text(size = 8))
+  }
+```
+
+```{r}
+  drawgraph(heartdata$sex, "Sex")
+```
+
+### High-Factors of Heart Failure and Deaths
+
+Anemia is a condition which the person has a defect in their red blood cells, which would affect heavily for the frequency of heart failure events. However, it is shown by the figure below that the proportion of deaths due to heart failure does not have a huge effect on deaths, which would be due to the fact that most people are prepared when heart failure occurs and able to avoid death. In fact, most of the factors shown below in the figures are high risk of having heart failure deaths since they affect the condition of the blood. Interestingly, it seems that they do not heavily affect the death due to heart failure, which might due to them being able to manage the situation.
+
+
+```{r}
+  anemia_graph <- drawgraph(heartdata$anaemia, "Anemia")
+  diabetes_graph <- drawgraph(heartdata$diabetes, "Diabetes")
+  highblood_graph <- drawgraph(heartdata$high_blood_pressure, "High Blood Pressure")
+  smoking_graph <- drawgraph(heartdata$smoking, "Smoking Status")
+
+  ggarrange(anemia_graph, diabetes_graph, highblood_graph, smoking_graph)
+```
+
+### Creatinine Phospokinase and Heart Failure Deaths
+
+Creatine Phosphokinase (CPK) is an enzyme that measures the damages that are inflicted in your heart, thus higher level means higher risk of death. The normal level of enzyme should be around 10-120 mcg/l. The level of CPK should depend on the recent activities or age. The figure below confirms that high level of CPK should indicate heart failure and deaths. However, it is surprising that the level of CPK does not relate to their age.
+
+```{r}
+  heartdata %>%
+    mutate(age_group = case_when(
+      age < 50  ~ "< 50",
+      (age >= 50 & age <= 70) ~ "50-70", 
+      age > 70 ~ "Older than 70")) %>%
+    ggplot(aes(x = creatinine_phosphokinase, y = death_event, fill = sex)) + 
+    geom_boxplot() +
+    geom_jitter(alpha = 0.7, aes(color = age_group)) +
+    labs(title = "Level of CPK with Respect to Gender and Age")
+```
+
+### Ejection Fraction and Heart Failure Deaths
+
+Ejection Fraction is one of the important measurement in heart failure as it measures the performance of the heart which pumps the blood across the body. It has a 'normal' value of 50-70%, which when shown in the figure below, it confirms that death occurs when ejection fraction is low and it heavily affects on the survivability of a person with heart condition. Lower ejection fraction means higher risk of catching a heart failure event.  
+
+```{r}
+  heartdata %>%
+    ggplot(aes(x = ejection_fraction, y = death_event)) + 
+    geom_boxplot() +
+    labs(title = "Percentage of Ejection Fraction with Respect Alive Status")
+```
+
+### Follow-up Period
+
+Following up to the doctor is important to help manage your lifestyle to avoid heart failure events, or how to manage if such event occurs by providing tests, medications, and advises. Thus, it is important to check in with the doctor, especially when you are in the risk of occurring a heart failure event. As shown in the figure below, it is shown that those who are alive mostly have more frequent visits to the doctor than those who are not. Even with the high risk of heart failure, they survived as they follow-up with the doctor more often.
+
+```{r}
+  heartdata %>%
+    mutate(ej_frac_grouped = if_else((ejection_fraction >= 50 & ejection_fraction <= 70),
+                                     "Normal", "Risk of Heart Failure")) %>%
+    ggplot(aes(x = time, y = death_event, fill = ej_frac_grouped)) + 
+    geom_boxplot() +
+    labs(title = "Follow-up Period with Respect to Ejection Fraction")
+```
+
+# Setting Up the Model
+
+We will go through different setups to simplify our model building, thanks to `tidymodels`, it is easy to set up each model
+
+## Train/Test Split & Fold
+
+First, we want to set a seed so we can avoid the randomness in the split. Then, we would want to split the dataset into two different categories: Training and Testing. While training will be used to optimize our model, testing we will be used to test if the trained model are behaving well. Moreover, we also use v-fold validation, which is useful for testing for different parameters. Moreover, we use stratified sampling so the parameter we test will have the same proportion of the predictor variables.
+
+```{r}
+  set.seed(123)
+
+  heartdata <- as_tibble(heartdata)
+  
+  heart_split <- initial_split(heartdata, prop = 0.8, strata = "death_event")
+  heart_test <- testing(heart_split)
+  heart_train <- training(heart_split)
+  heart_folds <- vfold_cv(heart_train, v = 5, strata = "death_event")
+  
+```
+
+After splitting the data, we have `r nrow(heart_train)` total of observations while the test have `r nrow(heart_test)` total of observations. We use v = 5 since we don't have a big of a data.
+
+## Recipe Building
+
+Creating the recipe helps us to not repeat the process of transforming our predictors. To simplify the variables and transforming into values that are easily manageable while satisfies the requirements for the model, we normalize the predictors and dummy the categorical variables. Moreover, from the EDA, we notice the relationships between variables, for example the ejection fraction which relates to the visit frequency. The step_interact() function helps us capture the relationship between these two variables.
+
+
+```{r}
+  heart_recipe <- recipe(death_event ~ ., data = heart_train) %>%
+    step_normalize(all_numeric_predictors()) %>%
+    step_dummy(all_nominal_predictors()) %>%
+    step_interact(terms = ~ ejection_fraction:time)
+  
+   prep(heart_recipe) %>%
+    bake(new_data = heart_train) %>%
+    head() %>%
+    kable() %>%
+    kable_material(c("striped", "hover"), full_width = F) %>%
+    scroll_box(width = "800px") 
+```
+
+
+## Choosing the Model
+
+In choosing up the model, we will start by choosing the simplest model which does not require tuning, but we'll do it anyway to find the best hyper parameter: Elastic Net Logistic Regression, Linear Discriminant Analysis(LDA), and Quadratic Discriminant Analysis(QDA). Finally, the tree models, which require more tuning within its hyperparameter: the Decision Tree Model and Random Forest. 
+
+```{r}
+  lda_mod <- discrim_linear() %>% 
+    set_mode("classification") %>% 
+    set_engine("MASS")
+
+  qda_mod <- discrim_quad() %>% 
+    set_mode("classification") %>% 
+    set_engine("MASS")
+
+  enl_mod <- logistic_reg(mixture = tune(), penalty = tune()) %>%
+    set_mode("classification") %>%
+    set_engine("glmnet")
+  
+  tree_mod <- decision_tree(cost_complexity = tune()) %>%
+    set_mode("classification") %>%
+    set_engine("rpart") 
+  
+  rf_mod <- rand_forest(mtry = tune(), 
+                        trees = tune(), 
+                        min_n = tune()) %>%
+    set_engine("ranger", importance = "impurity") %>% 
+    set_mode("classification")
+```
+
+### Setting Up Workflow
+
+Now, we setup a workflow for each of the model, this is important as we will eventually need to compare each of the model's performance later on, the usage of the workflow would also be very useful with different environments, but we will not go into it in this project
+
+```{r}
+  lda_wf <- workflow() %>%
+    add_model(lda_mod) %>%
+    add_recipe(heart_recipe)
+  
+  qda_wf <- workflow() %>%
+    add_model(qda_mod) %>%
+    add_recipe(heart_recipe)
+  
+  enl_wf <- workflow() %>%
+    add_model(enl_mod) %>%
+    add_recipe(heart_recipe)
+  
+  tree_wf <- workflow() %>%
+    add_model(tree_mod) %>%
+    add_recipe(heart_recipe)
+
+  rf_wf <- workflow() %>% 
+    add_model(rf_mod) %>% 
+    add_recipe(heart_recipe)
+```
+
+# Hyper-Parameter Tuning
+
+To find the optimal parameter for each tuned model, we will go through the steps that will find the best parameter for each corresponding model. Here, since we are dealing with classification model, we will look at the metric `roc_auc`, which measures the true-positive and false-positive predictions, measured using values from [0,1], with the better values being the ones that is further away from 0.5. Moreover, we will also look at `accuracy`, which tells us if the model is correctly predicting the true values of the data.
+
+## Defining the Grid
+
+Before we tune the model, we will need a grid for each respective models as it gives us different mutations of our selected range for the hyperparameters. Here, we will define each of the possible parameters that we would want to test, giving a range that we think that would be our optimal model. For the others, they have pretty much a default value, so we will look into the random forest more. `mtry` set the number of predictors that will be used, `min_n` is the minimum number of trees in the model, while `min_n` set the minimum number of data in each node.  
+
+```{r}
+  enl_grid <- grid_regular(penalty(range = c(0, 1), trans=identity_trans()),
+                        mixture(range = c(0, 1)),
+                        levels = 10)
+
+  tree_grid <- grid_regular(cost_complexity(range = c(-3, -1)), 
+                          levels = 10)
+  
+  rf_grid <- grid_regular(mtry(range = c(2,8)),
+                          trees(range = c(100, 800)),
+                          min_n(range = c(15, 30)),
+                          levels = 10)
+```
+
+## Tuning
+
+Using the grid that we have just created, we will apply those values into testing with our training data.
+
+```{r, eval = FALSE}
+  tune_enl <- tune_grid(object = enl_wf,
+                        resamples = heart_folds, 
+                        grid = enl_grid)
+
+  tune_tree <- tune_grid(object = tree_wf,
+                         resamples = heart_folds, 
+                         grid = tree_grid)
+  
+  tune_rf <- tune_grid(object = rf_wf,
+                         resamples = heart_folds, 
+                         grid = rf_grid)
+```
+
+Since tuning takes a lot of time, we will save the obtained data from the tuning and set `eval=FALSE` in the r code chunk in order to save time on knitting the file and `eval=FALSE` in the r code chunk. 
+
+```{r, eval = FALSE}
+  save(tune_enl, file = "tune_enl.rda")
+  save(tune_tree, file = "tune_tree.rda")
+  save(tune_rf, file = "tune_rf.rda")
+```
+
+We will load the file that we have computed previously
+
+```{r}
+  load("tune_enl.rda")
+  load("tune_tree.rda")
+  load("tune_rf.rda")
+```
+
+## Selecting Hyperparameters
+
+After tuning the hyperparameters, we would want to look at each of the metrics' behavior with each combinations of the listed hyperparameters(done behind the scene), which then we would run again to find the optimal range of hyperparameters given our ideas are false. Then, we would select the hyperparameters with the convenient function given to us.
+
+### Elastic Net Logistic Regression
+```{r, message = 'hide'}
+  autoplot(tune_enl)
+```
+
+From the shown plot, it seems like the more regularization and lasso included in the data, the more innacurate the prediction becomes, as well as the less the `roc_auc` becomes, we can also select the best parameter by the `select_best` function, which shows that the parameter is best when the penalty is 0 and the mixture is 0, which is basically the original logistic regression.
+
+
+```{r}
+  best_par_enl <- select_by_one_std_err(tune_enl, penalty, mixture, metric = "roc_auc")
+  best_par_enl
+```
+
+### Tree Model
+
+```{r}
+  autoplot(tune_tree)
+```
+
+By the graph, it looks like the larger the complexity, the more accurate the data is, but the false positive and true positive worsens as shown by the `roc_auc` value. Thus, we would prefer more `roc_auc` since it is useless if the prediction is accurate but it shows false/true positive.
+
+```{r}
+  best_par_tree <- select_best(tune_tree, metric = "roc_auc")
+```
+
+### Random Forest
+
+```{r}
+  autoplot(tune_rf)
+```
+
+It shows that the larger the `mtry`, the worsen the model becomes, which make sense from our EDA before, especially for the response variable as it doesn't really affect much. Moreover, the minimal node shows that it is optimal at either 14 and 20, but the accuracy is better for the 20 value. Finally, the number of trees looks better at around 200-600. We use the same function to find the best hyper parameter by using `select_best` 
+
+```{r}
+  best_par_rf <- select_best(tune_rf, metric = "roc_auc")
+```
+
+## Finalize Workflow
+
+After tuning our parameters, we would want to assign the chosen parameters to our workflow which currently has no parameters. Thus, we will do this by using the `finalize_workflow()` function, which calls out our preferred workflow and put the parameters that are waiting to be assigned.
+
+```{r}
+  final_enl_wf <- finalize_workflow(enl_wf, best_par_enl)
+  final_tree_wf <- finalize_workflow(tree_wf, best_par_tree)
+  final_rf_wf <- finalize_workflow(rf_wf, best_par_rf)
+```
+
+## Fitting the Model
+
+After finalizing the workflow, we will fit the model to our training data for each of the model we considered
+
+```{r}
+  lda_fit <- fit(lda_wf, heart_train)
+  qda_fit <- fit(qda_wf, heart_train)
+  enl_fit <- fit(final_enl_wf, heart_train)
+  tree_fit <- fit(final_tree_wf, heart_train)
+  rf_fit <- fit(final_rf_wf, heart_train)
+```
+
+## Model Accuracies
+
+We have fitted our model, which is now we will assess each of these models' accuracies. To do that, we will test it using the heart_train data, as it should produce a good `roc_auc` value as we have fitted the model using the respective data.
+
+```{r}
+  lda_auc <- augment(lda_fit, new_data = heart_train) %>%
+    roc_auc(death_event, .pred_Dead) %>%
+    dplyr::select(.estimate)
+
+  qda_auc <- augment(qda_fit, new_data = heart_train) %>%
+    roc_auc(death_event, .pred_Dead) %>%
+    dplyr::select(.estimate)
+  
+  enl_auc <- augment(enl_fit, new_data = heart_train) %>%
+    roc_auc(death_event, .pred_Dead) %>%
+    dplyr::select(.estimate)
+
+  tree_auc <- augment(tree_fit, new_data = heart_train) %>%
+    roc_auc(death_event, .pred_Dead) %>%
+    dplyr::select(.estimate)
+  
+  rf_auc <- augment(rf_fit, new_data = heart_train) %>%
+    roc_auc(death_event, .pred_Dead) %>%
+    dplyr::select(.estimate)
+  
+  
+  combined_auc_train <- c(lda_auc$.estimate, qda_auc$.estimate, enl_auc$.estimate, tree_auc$.estimate, rf_auc$.estimate)
+```
+
+```{r}
+  model_names <- c("LDA", "QDA", "Elastic Net", "Tree", "Random Forest")
+
+  train_auc <- tibble(Model = model_names, AUC = combined_auc_train) %>%
+    arrange(-combined_auc_train)
+  
+  train_auc %>%
+    kable() %>%
+    kable_material(c("striped", "hover"), full_width = F) %>%
+    scroll_box(width = "800px") 
+```
+
+From our train data, the random forest model performed way better than the other models, with a very high `roc_auc` of 0.98. Thus, we will conclude that this model performs best and put the model into the test data.
+
+# Testing the Model
+
+Now we have the best model, we will run the random forest model into our testing data that we have split previously
+
+## ROC_AUC and Accuracy
+
+```{r}
+  augment_test <- augment(rf_fit, new_data = heart_test)
+
+  auc_test <- augment_test %>%
+    roc_auc(death_event, .pred_Dead) 
+  
+  accuracy_test <- augment_test %>%
+    accuracy(death_event, .pred_class)
+  
+  auc_accuracy_test <- c(auc_test$.estimate, accuracy_test$.estimate)
+  metric_names <- c("AUC", "Accuracy")
+  
+  test_table <- tibble(Metric = metric_names, Value = auc_accuracy_test)
+  
+  test_table %>%
+    kable() %>%
+    kable_material(c("striped", "hover"), full_width = F) %>%
+    scroll_box(width = "800px") 
+```
+
+Our model has performed super well for the testing data, which has a high AUC of 0.95 while pretaining an accuracy of 0.9
+
+## Heatmap
+
+This heatmap will tell us the reasoning behind the value of `roc_auc` and `accuracy` that we have above us, which shows that it is good at predicting both, having almost the same proportion of accuracy for each class.
+
+```{r}
+  augment_test %>%
+    conf_mat(death_event, .pred_class) %>% 
+    autoplot(type = "heatmap")
+```
+
+## Predictor Importance
+
+From this model, we can see that the most important factor of predicting whether the person will be alive or dead is the time, creatinine test, and ejection fraction, which these are shown by the EDA section that both frequent visits to the doctor and ejection fraction is essential to the patient's survivability.
+
+```{r}
+    rf_fit %>% 
+    extract_fit_parsnip() %>% 
+    vip()
+```
+
+# Conclusion
+
+Throughout this project, we have tested five different models into our dataset and eventually finding out that the random forest model outperforms heavily than the other models. We have also found that the most important factor of survivability due to heart disease is the frequent visits to the doctor, which then will complement the other variables through the doctor's advice and testing process. Hopefully, with this observations, we can take into account that age is not the most important factor of our survivability, but the willingness to take the time to take care of themselves.
+
+# References
+
+https://www.pennmedicine.org/updates/blogs/heart-and-vascular-blog/2022/april/ejection-fraction-what-the-numbers-mean#
+https://www.hopkinslupus.org/lupus-tests/clinical-tests/creatine-phosphokinase-cpk/
+https://www.mountsinai.org/health-library/tests/creatine-phosphokinase-test
+https://onlinelibrary.wiley.com/doi/10.1002/ejhf.1697#:~:text=Historically%2C%20kidney%20function%20was%20primarily,during%20acute%20heart%20failure%20episodes.
+https://www.ahajournals.org/doi/10.1161/01.CIR.0000086897.15588.4B
+https://medlineplus.gov/lab-tests/sodium-blood-test/
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9393312/
+
