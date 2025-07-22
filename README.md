@@ -16,5 +16,7 @@
 
 Please open the "Final-Project_Daniel.html" file to see further details of the project
 The codes are mostly listed in the rmarkdown file: "Final Project_Daniel.Rmd"
+To save time upon running the code, please download the "tuned models" file to get the saved tuning 
+
 
 The data can be found through [kaggle](https://www.kaggle.com/datasets/andrewmvd/heart-failure-clinical-data)
